@@ -107,7 +107,7 @@ func (w *workerDelegate) generateMachineConfig(ctx context.Context) error {
 			"partition": infrastructureConfig.PartitionID,
 			"size":      pool.MachineType,
 			"project":   projectID,
-			"network":   privateNetwork.ID,
+			"network":   *privateNetwork.ID,
 			"image":     machineImage,
 			"tags": []string{
 				fmt.Sprintf("kubernetes.io/cluster=%s", w.worker.Namespace),

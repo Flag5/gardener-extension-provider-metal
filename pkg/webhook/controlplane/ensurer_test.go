@@ -4,13 +4,15 @@ import (
 	"context"
 	"testing"
 
+	extensionscontroller "github.com/gardener/gardener-extensions/pkg/controller"
 	mockclient "github.com/gardener/gardener-extensions/pkg/mock/controller-runtime/client"
 	extensionswebhook "github.com/gardener/gardener-extensions/pkg/webhook"
+	"github.com/gardener/gardener-extensions/pkg/webhook/controlplane/genericmutator"
 	"github.com/gardener/gardener-extensions/pkg/webhook/controlplane/test"
-	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/metal-stack/gardener-extension-provider-metal/pkg/metal"
 
-	"github.com/coreos/go-systemd/unit"
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -18,7 +20,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	kubeletconfigv1beta1 "k8s.io/kubelet/config/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/runtime/inject"
 )
@@ -36,14 +37,26 @@ var _ = Describe("Ensurer", func() {
 	var (
 		ctrl *gomock.Controller
 
-		cmKey = client.ObjectKey{Namespace: namespace, Name: metal.CloudProviderConfigName}
-		cm    = &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: metal.CloudProviderConfigName},
-			Data:       map[string]string{"abc": "xyz"},
+		eContextK8s116 = genericmutator.NewInternalEnsurerContext(
+			&extensionscontroller.Cluster{
+				Shoot: &gardencorev1beta1.Shoot{
+					Spec: gardencorev1beta1.ShootSpec{
+						Kubernetes: gardencorev1beta1.Kubernetes{
+							Version: "1.16.0",
+						},
+					},
+				},
+			},
+		)
+
+		secretKey = client.ObjectKey{Namespace: namespace, Name: v1beta1constants.SecretNameCloudProvider}
+		secret    = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: v1beta1constants.SecretNameCloudProvider},
+			Data:       map[string][]byte{"foo": []byte("bar")},
 		}
 
 		annotations = map[string]string{
-			"checksum/configmap-" + metal.CloudProviderConfigName: "08a7bc7fe8f59b055f173145e211760a83f02cf89635cef26ebb351378635606",
+			"checksum/secret-" + v1beta1constants.SecretNameCloudProvider: "8bafb35ff1ac60275d62e1cbd495aceb511fb354f74a20f7d06ecb48b3a68432",
 		}
 	)
 
@@ -59,7 +72,7 @@ var _ = Describe("Ensurer", func() {
 		It("should add missing elements to kube-apiserver deployment", func() {
 			var (
 				dep = &appsv1.Deployment{
-					ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: gardencorev1alpha1.DeploymentNameKubeAPIServer},
+					ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: v1beta1constants.DeploymentNameKubeAPIServer},
 					Spec: appsv1.DeploymentSpec{
 						Template: corev1.PodTemplateSpec{
 							Spec: corev1.PodSpec{
@@ -76,7 +89,7 @@ var _ = Describe("Ensurer", func() {
 
 			// Create mock client
 			client := mockclient.NewMockClient(ctrl)
-			client.EXPECT().Get(context.TODO(), cmKey, &corev1.ConfigMap{}).DoAndReturn(clientGet(cm))
+			client.EXPECT().Get(context.TODO(), secretKey, &corev1.Secret{}).DoAndReturn(clientGet(secret))
 
 			// Create ensurer
 			ensurer := NewEnsurer(logger)
@@ -84,7 +97,7 @@ var _ = Describe("Ensurer", func() {
 			Expect(err).To(Not(HaveOccurred()))
 
 			// Call EnsureKubeAPIServerDeployment method and check the result
-			err = ensurer.EnsureKubeAPIServerDeployment(context.TODO(), dep)
+			err = ensurer.EnsureKubeAPIServerDeployment(context.TODO(), eContextK8s116, dep)
 			Expect(err).To(Not(HaveOccurred()))
 			checkKubeAPIServerDeployment(dep, annotations)
 		})
@@ -92,7 +105,7 @@ var _ = Describe("Ensurer", func() {
 		It("should modify existing elements of kube-apiserver deployment", func() {
 			var (
 				dep = &appsv1.Deployment{
-					ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: gardencorev1alpha1.DeploymentNameKubeAPIServer},
+					ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: v1beta1constants.DeploymentNameKubeAPIServer},
 					Spec: appsv1.DeploymentSpec{
 						Template: corev1.PodTemplateSpec{
 							Spec: corev1.PodSpec{
@@ -103,7 +116,7 @@ var _ = Describe("Ensurer", func() {
 											"--cloud-provider=?",
 											"--cloud-config=?",
 											"--enable-admission-plugins=Priority,NamespaceLifecycle",
-											"--disable-admission-plugins=PersistentVolumeLabel",
+											"--authentication-token-webhook-config-file=/etc/webhook/config/authn-webhook-config.json",
 										},
 										VolumeMounts: []corev1.VolumeMount{
 											{Name: metal.CloudProviderConfigName, MountPath: "?"},
@@ -121,7 +134,7 @@ var _ = Describe("Ensurer", func() {
 
 			// Create mock client
 			client := mockclient.NewMockClient(ctrl)
-			client.EXPECT().Get(context.TODO(), cmKey, &corev1.ConfigMap{}).DoAndReturn(clientGet(cm))
+			client.EXPECT().Get(context.TODO(), secretKey, &corev1.Secret{}).DoAndReturn(clientGet(secret))
 
 			// Create ensurer
 			ensurer := NewEnsurer(logger)
@@ -129,7 +142,7 @@ var _ = Describe("Ensurer", func() {
 			Expect(err).To(Not(HaveOccurred()))
 
 			// Call EnsureKubeAPIServerDeployment method and check the result
-			err = ensurer.EnsureKubeAPIServerDeployment(context.TODO(), dep)
+			err = ensurer.EnsureKubeAPIServerDeployment(context.TODO(), eContextK8s116, dep)
 			Expect(err).To(Not(HaveOccurred()))
 			checkKubeAPIServerDeployment(dep, annotations)
 		})
@@ -139,7 +152,7 @@ var _ = Describe("Ensurer", func() {
 		It("should add missing elements to kube-controller-manager deployment", func() {
 			var (
 				dep = &appsv1.Deployment{
-					ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: gardencorev1alpha1.DeploymentNameKubeControllerManager},
+					ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: v1beta1constants.DeploymentNameKubeControllerManager},
 					Spec: appsv1.DeploymentSpec{
 						Template: corev1.PodTemplateSpec{
 							Spec: corev1.PodSpec{
@@ -156,7 +169,7 @@ var _ = Describe("Ensurer", func() {
 
 			// Create mock client
 			client := mockclient.NewMockClient(ctrl)
-			client.EXPECT().Get(context.TODO(), cmKey, &corev1.ConfigMap{}).DoAndReturn(clientGet(cm))
+			client.EXPECT().Get(context.TODO(), secretKey, &corev1.Secret{}).DoAndReturn(clientGet(secret))
 
 			// Create ensurer
 			ensurer := NewEnsurer(logger)
@@ -164,7 +177,7 @@ var _ = Describe("Ensurer", func() {
 			Expect(err).To(Not(HaveOccurred()))
 
 			// Call EnsureKubeControllerManagerDeployment method and check the result
-			err = ensurer.EnsureKubeControllerManagerDeployment(context.TODO(), dep)
+			err = ensurer.EnsureKubeControllerManagerDeployment(context.TODO(), eContextK8s116, dep)
 			Expect(err).To(Not(HaveOccurred()))
 			checkKubeControllerManagerDeployment(dep, annotations)
 		})
@@ -172,7 +185,7 @@ var _ = Describe("Ensurer", func() {
 		It("should modify existing elements of kube-controller-manager deployment", func() {
 			var (
 				dep = &appsv1.Deployment{
-					ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: gardencorev1alpha1.DeploymentNameKubeControllerManager},
+					ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: v1beta1constants.DeploymentNameKubeControllerManager},
 					Spec: appsv1.DeploymentSpec{
 						Template: corev1.PodTemplateSpec{
 							Spec: corev1.PodSpec{
@@ -200,7 +213,7 @@ var _ = Describe("Ensurer", func() {
 
 			// Create mock client
 			client := mockclient.NewMockClient(ctrl)
-			client.EXPECT().Get(context.TODO(), cmKey, &corev1.ConfigMap{}).DoAndReturn(clientGet(cm))
+			client.EXPECT().Get(context.TODO(), secretKey, &corev1.Secret{}).DoAndReturn(clientGet(secret))
 
 			// Create ensurer
 			ensurer := NewEnsurer(logger)
@@ -208,69 +221,9 @@ var _ = Describe("Ensurer", func() {
 			Expect(err).To(Not(HaveOccurred()))
 
 			// Call EnsureKubeControllerManagerDeployment method and check the result
-			err = ensurer.EnsureKubeControllerManagerDeployment(context.TODO(), dep)
+			err = ensurer.EnsureKubeControllerManagerDeployment(context.TODO(), eContextK8s116, dep)
 			Expect(err).To(Not(HaveOccurred()))
 			checkKubeControllerManagerDeployment(dep, annotations)
-		})
-	})
-
-	Describe("#EnsureKubeletServiceUnitOptions", func() {
-		It("should modify existing elements of kubelet.service unit options", func() {
-			var (
-				oldUnitOptions = []*unit.UnitOption{
-					{
-						Section: "Service",
-						Name:    "ExecStart",
-						Value: `/opt/bin/hyperkube kubelet \
-    --config=/var/lib/kubelet/config/kubelet`,
-					},
-				}
-				newUnitOptions = []*unit.UnitOption{
-					{
-						Section: "Service",
-						Name:    "ExecStart",
-						Value: `/opt/bin/hyperkube kubelet \
-    --config=/var/lib/kubelet/config/kubelet \
-    --cloud-provider=metal`,
-					},
-				}
-			)
-
-			// Create ensurer
-			ensurer := NewEnsurer(logger)
-
-			// Call EnsureKubeletServiceUnitOptions method and check the result
-			opts, err := ensurer.EnsureKubeletServiceUnitOptions(context.TODO(), oldUnitOptions)
-			Expect(err).To(Not(HaveOccurred()))
-			Expect(opts).To(Equal(newUnitOptions))
-		})
-	})
-
-	Describe("#EnsureKubeletConfiguration", func() {
-		It("should modify existing elements of kubelet configuration", func() {
-			var (
-				oldKubeletConfig = &kubeletconfigv1beta1.KubeletConfiguration{
-					FeatureGates: map[string]bool{
-						"Foo":                      true,
-						"VolumeSnapshotDataSource": true,
-						"CSINodeInfo":              true,
-					},
-				}
-				newKubeletConfig = &kubeletconfigv1beta1.KubeletConfiguration{
-					FeatureGates: map[string]bool{
-						"Foo": true,
-					},
-				}
-			)
-
-			// Create ensurer
-			ensurer := NewEnsurer(logger)
-
-			// Call EnsureKubeletConfiguration method and check the result
-			kubeletConfig := *oldKubeletConfig
-			err := ensurer.EnsureKubeletConfiguration(context.TODO(), &kubeletConfig)
-			Expect(err).To(Not(HaveOccurred()))
-			Expect(&kubeletConfig).To(Equal(newKubeletConfig))
 		})
 	})
 })
@@ -281,11 +234,7 @@ func checkKubeAPIServerDeployment(dep *appsv1.Deployment, annotations map[string
 	c := extensionswebhook.ContainerWithName(dep.Spec.Template.Spec.Containers, "kube-apiserver")
 	Expect(c).To(Not(BeNil()))
 	Expect(c.Command).To(Not(test.ContainElementWithPrefixContaining("--enable-admission-plugins=", "PersistentVolumeLabel", ",")))
-	Expect(c.Command).To(test.ContainElementWithPrefixContaining("--disable-admission-plugins=", "PersistentVolumeLabel", ","))
-	Expect(c.Command).To(test.ContainElementWithPrefixContaining("--feature-gates=", "VolumeSnapshotDataSource=true", ","))
-	Expect(c.Command).To(test.ContainElementWithPrefixContaining("--feature-gates=", "CSINodeInfo=true", ","))
-	Expect(c.Command).To(test.ContainElementWithPrefixContaining("--feature-gates=", "CSIDriverRegistry=true", ","))
-	Expect(c.Command).To(test.ContainElementWithPrefixContaining("--feature-gates=", "KubeletPluginsWatcher=true", ","))
+	Expect(c.Command).To(Not(test.ContainElementWithPrefixContaining("--admission-control-config-file=", "/etc/kubernetes/admission/admission-configuration.yaml", ",")))
 
 	// Check that the Pod template contains all needed checksum annotations
 	Expect(dep.Spec.Template.Annotations).To(Equal(annotations))

@@ -24,41 +24,33 @@ import (
 )
 
 var _ = Describe("Helper", func() {
-	DescribeTable("#FindAMIForRegion",
-		func(machineImages []config.MachineImage, imageName, version, regionName, expectedAMI string) {
-			ami, err := FindAMIForRegion(machineImages, imageName, version, regionName)
+	DescribeTable("#FindImage",
+		func(machineImages []config.MachineImage, imageName, version, expectedImage string) {
+			image, err := FindImage(machineImages, imageName, version)
 
-			Expect(ami).To(Equal(expectedAMI))
-			if expectedAMI != "" {
+			Expect(image).To(Equal(expectedImage))
+			if expectedImage != "" {
 				Expect(err).NotTo(HaveOccurred())
 			} else {
 				Expect(err).To(HaveOccurred())
 			}
 		},
 
-		Entry("list is nil", nil, "ubuntu", "1", "europe", ""),
-		Entry("empty list", []config.MachineImage{}, "ubuntu", "1", "europe", ""),
-		Entry("entry not found (image does not exist)", makeMachineImages("debian", "1", "europe", "0"), "ubuntu", "1", "europe", ""),
-		Entry("entry not found (version does not exist)", makeMachineImages("ubuntu", "2", "europe", "0"), "ubuntu", "1", "europe", ""),
-		Entry("entry not found (region does not exist)", makeMachineImages("ubuntu", "1", "asia", "0"), "ubuntu", "1", "europe", ""),
-		Entry("entry", makeMachineImages("ubuntu", "1", "europe", "ami-1234"), "ubuntu", "1", "europe", "ami-1234"),
+		Entry("list is nil", nil, "ubuntu", "1", ""),
+		Entry("empty list", []config.MachineImage{}, "ubuntu", "1", ""),
+		Entry("entry not found (image does not exist)", makeMachineImages("debian", "1"), "ubuntu", "1", ""),
+		Entry("entry not found (version does not exist)", makeMachineImages("ubuntu", "2"), "ubuntu", "1", ""),
+		Entry("entry", makeMachineImages("ubuntu", "1"), "ubuntu", "1", "ubuntu-1"),
 	)
 })
 
-func makeMachineImages(name, version, region, ami string) []config.MachineImage {
-	var regionAMIMapping []config.RegionAMIMapping
-	if len(region) != 0 && len(ami) != 0 {
-		regionAMIMapping = append(regionAMIMapping, config.RegionAMIMapping{
-			Name: region,
-			AMI:  ami,
-		})
-	}
+func makeMachineImages(name, version string) []config.MachineImage {
 
 	return []config.MachineImage{
 		{
 			Name:    name,
 			Version: version,
-			Regions: regionAMIMapping,
+			Image:   name + "-" + version,
 		},
 	}
 }
